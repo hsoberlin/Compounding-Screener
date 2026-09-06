@@ -1,6 +1,5 @@
 streamlit
-yfinance==1.7.0
+yfinance
 pandas
 numpy
-requests
 plotly
