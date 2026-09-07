@@ -464,10 +464,14 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     }
 
 
-def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0):
+def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None):
     """Tarik data terbaru satu saham dan hitung status SOP: HOLD, JUAL(TP),
     atau JUAL(CL). ob_streak_tersimpan dilewatkan dari jurnal biar hitungan
-    hari-beruntun-overbought konsisten antar sesi."""
+    hari-beruntun-overbought konsisten antar sesi. last_check_date mencegah
+    streak nambah berkali-kali kalau app di-render ulang di hari yang sama
+    (Streamlit rerun tiap ada interaksi) -- streak cuma boleh berubah
+    SEKALI per hari kalender."""
+    sudah_dicek_hari_ini = last_check_date == TODAY_STR
     try:
         df = yf.download(f"{ticker}.JK", period="30d", interval="1d", progress=False)
         if df.empty:
@@ -483,9 +487,13 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0):
             return {"harga_now": harga_now, "stoch_k": None, "ob_streak": ob_streak_tersimpan, "rekomendasi": "HOLD"}
 
         if harga_now < ll20_terkunci:
-            return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": 0, "rekomendasi": "JUAL_CL"}
+            ob_streak_final = 0 if not sudah_dicek_hari_ini else ob_streak_tersimpan
+            return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_final, "rekomendasi": "JUAL_CL"}
 
-        ob_streak = ob_streak_tersimpan + 1 if stoch_k > 80 else 0
+        if sudah_dicek_hari_ini:
+            ob_streak = ob_streak_tersimpan  # sudah dievaluasi hari ini, jangan nambah lagi
+        else:
+            ob_streak = ob_streak_tersimpan + 1 if stoch_k > 80 else 0
         rekom = "JUAL_TP" if ob_streak >= STOCH_OB_STREAK_TP else "HOLD"
         return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak, "rekomendasi": rekom}
     except Exception:
@@ -514,6 +522,7 @@ with st.container():
             for p in data_baru.get("positions", []):
                 p.setdefault("ob_streak", 0)
                 p.setdefault("asal", "compounding")
+                p.setdefault("last_ob_check", None)
             st.session_state["port"] = data_baru
             st.success("Jurnal termuat.")
             st.rerun()
@@ -631,11 +640,12 @@ if active_pos_count > 0:
     st.markdown("<div class='panel-title'>Status Posisi Aktif</div>", unsafe_allow_html=True)
     total_unrealized = 0.0
     for p in port["positions"]:
-        info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0))
+        info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0), p.get("last_ob_check"))
         if info is None:
             st.write(f"{p['ticker']}: data tidak tersedia saat ini.")
             continue
         p["ob_streak"] = info["ob_streak"]
+        p["last_ob_check"] = TODAY_STR
         nilai_now = info["harga_now"] * p["lots"] * 100
         gain_pct = (nilai_now / p["modal_terserap"] - 1) * 100
         total_unrealized += (nilai_now - p["modal_terserap"])
