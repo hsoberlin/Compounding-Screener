@@ -29,6 +29,7 @@ import yfinance as yf
 st.set_page_config(page_title="Compounding Terminal", layout="centered", initial_sidebar_state="collapsed")
 WIB = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(WIB).strftime("%Y-%m-%d")
+STARTING_DATE = "2026-09-07"   # hari pertama Compounding Terminal berjalan (tetap, jangan diubah)
 
 # =====================================================================
 # TEMA VISUAL -- terminal trader profesional, monokrom + aksen fungsional
@@ -68,43 +69,61 @@ code, .stMarkdown code, [data-testid="stMetricValue"] {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 18px;
-  margin-bottom: 14px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
 }
 .panel-title {
   font-family: 'Inter', sans-serif;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--text-dim);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+}
+
+.app-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  background: linear-gradient(90deg, #4A7DFF 0%, #26A65B 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 2px;
+}
+.app-subtitle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
 }
 
 .regime-value {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 600;
 }
 .regime-sub {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-dim);
-  margin-top: 4px;
+  margin-top: 3px;
 }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
-.stat-item { background: #0F1114; border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; }
-.stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 600; margin-top: 2px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px; }
+.stat-item { background: #0F1114; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
+.stat-label { font-size: 9.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; font-weight: 600; margin-top: 1px; }
 
 .candidate-row {
   background: #0F1114; border: 1px solid var(--line); border-radius: 5px;
-  padding: 14px; margin-bottom: 10px;
+  padding: 10px 12px; margin-bottom: 6px;
 }
-.candidate-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.candidate-ticker { font-family: 'Inter', sans-serif; font-size: 17px; font-weight: 700; }
-.conf-bar-bg { background: #22252B; border-radius: 3px; height: 5px; overflow: hidden; margin-top: 6px; }
+.candidate-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+.candidate-ticker { font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 700; }
+.conf-bar-bg { background: #22252B; border-radius: 3px; height: 4px; overflow: hidden; margin-top: 4px; }
 .conf-bar-fill { height: 100%; }
 
 .rec-hold { color: var(--text-dim); }
@@ -222,10 +241,12 @@ def init_portfolio(capital):
     return {
         "last_updated": TODAY_STR,
         "initial_capital": capital,
+        "total_modal_masuk": capital,   # kumulatif: modal awal + semua suntikan berikutnya
         "current_cash": capital,
         "total_equity": capital,
         "positions": [],
         "history": {"total_bought": 0, "total_sold": 0, "hit_tp": 0, "hit_sl": 0},
+        "log_transaksi": [],            # riwayat bertanggal, dipakai buat rekap siklus 10 hari
         "daily_tracker": {"date": TODAY_STR, "accumulated_value": 0, "materai_paid": False},
     }
 
@@ -299,6 +320,32 @@ def get_macro_regime():
         return regime, dd_sekarang, pct_dari_trough
     except Exception:
         return "NORMAL", 0.0, None
+
+
+# =====================================================================
+# KALENDER HARI BURSA -- dipakai buat rekap siklus 10 hari, ditarik
+# dari kalender IHSG (^JKSE) sehingga otomatis melewati akhir pekan
+# dan hari libur bursa.
+# =====================================================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_kalender_bursa():
+    try:
+        df = yf.download("^JKSE", start=STARTING_DATE, progress=False)
+        if df.empty:
+            return []
+        return [d.strftime("%Y-%m-%d") for d in df.index]
+    except Exception:
+        return []
+
+
+def hari_ke(tanggal_str, kalender):
+    """Urutan hari bursa (1-based) untuk sebuah tanggal transaksi.
+    Kalau tanggalnya bukan hari bursa (jarang terjadi), dibulatkan ke
+    hari bursa berikutnya yang terdekat."""
+    for i, d in enumerate(kalender):
+        if d >= tanggal_str:
+            return i + 1
+    return len(kalender) if kalender else 1
 
 
 # =====================================================================
@@ -448,7 +495,10 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0):
 # =====================================================================
 # UI -- HEADER & JURNAL
 # =====================================================================
-st.title("Compounding Terminal")
+st.markdown("""
+<div class="app-title">Compounding Terminal</div>
+<div class="app-subtitle">BREAKOUT-ONLY // REGIME-AWARE // v2</div>
+""", unsafe_allow_html=True)
 
 with st.container():
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
@@ -459,8 +509,11 @@ with st.container():
             data_baru = json.load(uploaded_file)
             if "daily_tracker" not in data_baru or data_baru.get("daily_tracker", {}).get("date") != TODAY_STR:
                 data_baru["daily_tracker"] = {"date": TODAY_STR, "accumulated_value": 0, "materai_paid": False}
+            data_baru.setdefault("total_modal_masuk", data_baru.get("initial_capital", data_baru.get("current_cash", 0)))
+            data_baru.setdefault("log_transaksi", [])
             for p in data_baru.get("positions", []):
                 p.setdefault("ob_streak", 0)
+                p.setdefault("asal", "compounding")
             st.session_state["port"] = data_baru
             st.success("Jurnal termuat.")
             st.rerun()
@@ -470,6 +523,8 @@ with st.container():
 
 alokasi_per_posisi = port["initial_capital"] * 0.20
 active_pos_count = len(port["positions"])
+total_modal_masuk = port.get("total_modal_masuk", port["initial_capital"])
+return_pct = (port["total_equity"] / total_modal_masuk - 1) * 100 if total_modal_masuk > 0 else 0.0
 
 st.markdown("<div class='panel'>", unsafe_allow_html=True)
 st.markdown("<div class='panel-title'>Ekuitas & Posisi</div>", unsafe_allow_html=True)
@@ -477,7 +532,8 @@ st.markdown(f"""
 <div class="stat-grid">
   <div class="stat-item"><div class="stat-label">Total Ekuitas</div><div class="stat-value">Rp {port['total_equity']:,.0f}</div></div>
   <div class="stat-item"><div class="stat-label">Kas Aktif</div><div class="stat-value" style="color:var(--accent)">Rp {port['current_cash']:,.0f}</div></div>
-  <div class="stat-item"><div class="stat-label">Alokasi/Posisi</div><div class="stat-value">Rp {alokasi_per_posisi:,.0f}</div></div>
+  <div class="stat-item"><div class="stat-label">Total Modal Masuk</div><div class="stat-value">Rp {total_modal_masuk:,.0f}</div></div>
+  <div class="stat-item"><div class="stat-label">Return</div><div class="stat-value" style="color:{'var(--up)' if return_pct>=0 else 'var(--down)'}">{return_pct:+.2f}%</div></div>
 </div>
 """.replace(",", "."), unsafe_allow_html=True)
 
@@ -502,18 +558,87 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =====================================================================
+# UI -- TAMBAH MODAL (suntikan baru -- masuk ke current_cash DAN
+# total_modal_masuk, dipakai buat transfer dari akun lain yang tidak
+# lewat penjualan posisi warisan di app ini, mis. transfer cash murni)
+# =====================================================================
+with st.expander("Tambah Modal"):
+    st.caption("Suntikan modal baru dari luar app ini (mis. transfer cash dari akun lain). Ini menambah Total Modal Masuk sekaligus Kas Aktif -- beda dari 'Sesuaikan Kas' yang cuma menimpa angka tanpa mengubah Total Modal Masuk.")
+    tambah_nominal = st.number_input("Nominal tambahan (Rp)", min_value=0, value=0, step=100_000)
+    if st.button("Tambah Modal Sekarang"):
+        if tambah_nominal > 0:
+            port["current_cash"] += tambah_nominal
+            port["total_modal_masuk"] = port.get("total_modal_masuk", port["initial_capital"]) + tambah_nominal
+            total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
+            port["total_equity"] = port["current_cash"] + total_valuasi_saham
+            st.session_state["port"] = port
+            st.success(f"Modal bertambah Rp{tambah_nominal:,.0f}. Total Modal Masuk sekarang Rp{port['total_modal_masuk']:,.0f}".replace(",", "."))
+            st.rerun()
+
+
+# =====================================================================
+# UI -- DAFTARKAN POSISI WARISAN (saham yang sudah dipegang sebelum
+# app ini dipakai -- proceeds jualnya nanti dihitung sebagai modal
+# masuk baru, bukan P&L trading Compounding Screener)
+# =====================================================================
+with st.expander("Daftarkan Posisi Warisan"):
+    st.caption("Buat saham yang sudah kamu pegang sebelum mulai pakai app ini (bukan dibeli lewat form Beli). Begitu nanti terjual, hasilnya masuk sebagai Modal Masuk baru, bukan P&L trading.")
+    w_ticker = st.text_input("Ticker", key="w_ticker")
+    w_lots = st.number_input("Jumlah lot", min_value=0, step=1, key="w_lots")
+    w_harga = st.number_input("Harga beli rata-rata", min_value=0.0, step=1.0, key="w_harga")
+    w_ll20 = st.number_input("Batas CL (LL20 manual, opsional -- isi 0 jika belum tahu)", min_value=0.0, step=1.0, key="w_ll20")
+    if st.button("Daftarkan Posisi Ini"):
+        if w_ticker and w_lots > 0 and w_harga > 0:
+            modal_terserap_warisan = w_lots * w_harga * 100
+            port["positions"].append({
+                "ticker": w_ticker.upper(),
+                "entry_price": w_harga,
+                "lots": int(w_lots),
+                "modal_terserap": modal_terserap_warisan,
+                "ll20_terkunci": float(w_ll20) if w_ll20 > 0 else 0,
+                "ob_streak": 0,
+                "asal": "warisan",
+            })
+            st.session_state["port"] = port
+            st.success(f"{w_ticker.upper()} terdaftar sebagai posisi warisan.")
+            st.rerun()
+
+
+# =====================================================================
+# UI -- SESUAIKAN KAS MANUAL (buat sinkron dgn broker: transfer antar
+# akun, hasil jual saham lama yang tidak lewat app ini, dsb -- bukan
+# transaksi, murni menyamakan angka current_cash dengan kas riil)
+# =====================================================================
+with st.expander("Sesuaikan Kas Manual"):
+    st.caption("Pakai ini kalau kas riil di broker beda dari yang tercatat di sini -- misalnya setelah transfer antar akun atau menjual saham yang tidak lewat app ini. Ini tidak membuat catatan transaksi, cuma menimpa angka kas.")
+    kas_baru = st.number_input("Kas riil sekarang (Rp)", min_value=0, value=int(port["current_cash"]), step=100_000)
+    if st.button("Update Kas"):
+        selisih = kas_baru - port["current_cash"]
+        port["current_cash"] = kas_baru
+        total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
+        port["total_equity"] = port["current_cash"] + total_valuasi_saham
+        st.session_state["port"] = port
+        st.success(f"Kas diperbarui. Selisih dari sebelumnya: Rp{selisih:,.0f}".replace(",", "."))
+        st.rerun()
+
+
+# =====================================================================
 # UI -- MONITORING POSISI AKTIF (otomatis, bukan manual)
 # =====================================================================
+total_unrealized = 0.0
 if active_pos_count > 0:
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
     st.markdown("<div class='panel-title'>Status Posisi Aktif</div>", unsafe_allow_html=True)
+    total_unrealized = 0.0
     for p in port["positions"]:
         info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0))
         if info is None:
             st.write(f"{p['ticker']}: data tidak tersedia saat ini.")
             continue
         p["ob_streak"] = info["ob_streak"]
-        gain_pct = (info["harga_now"] * p["lots"] * 100 / p["modal_terserap"] - 1) * 100
+        nilai_now = info["harga_now"] * p["lots"] * 100
+        gain_pct = (nilai_now / p["modal_terserap"] - 1) * 100
+        total_unrealized += (nilai_now - p["modal_terserap"])
         gain_color = "var(--up)" if gain_pct >= 0 else "var(--down)"
         rekom_map = {
             "HOLD": ("HOLD", "rec-hold"),
@@ -555,6 +680,10 @@ st.markdown(f"<div style='font-size:12px; color:var(--text-dim); margin-bottom:8
 with tab1:
     b_ticker = st.text_input("Ticker")
     b_price = st.number_input("Harga match (beli)", min_value=0)
+    b_lot_manual = st.number_input(
+        "Lot manual (isi kalau lot fill beda dari saran otomatis -- kosongkan/0 untuk pakai saran)",
+        min_value=0, value=0, step=1,
+    )
 
     if b_price > 0:
         biaya_materai_estimasi = 0
@@ -563,14 +692,18 @@ with tab1:
 
         alokasi_bersih = alokasi_per_posisi - biaya_materai_estimasi
         biaya_per_lot_net = (b_price * 100) * (1 + FEE_BELI)
-        lot_kalkulasi = math.floor(alokasi_bersih / biaya_per_lot_net) if biaya_per_lot_net > 0 else 0
+        lot_saran = math.floor(alokasi_bersih / biaya_per_lot_net) if biaya_per_lot_net > 0 else 0
+        lot_kalkulasi = b_lot_manual if b_lot_manual > 0 else lot_saran
+        pakai_manual = b_lot_manual > 0
 
         if lot_kalkulasi > 0:
             nilai_kotor = lot_kalkulasi * b_price * 100
             total_fee = nilai_kotor * FEE_BELI
             biaya_materai_final = TARIF_MATERAI if (not tracker["materai_paid"] and (tracker["accumulated_value"] + nilai_kotor) > BATAS_MATERAI) else 0
             modal_aktual = nilai_kotor + total_fee + biaya_materai_final
-            kembalian_kas = alokasi_per_posisi - modal_aktual
+            kembalian_kas = (modal_aktual if pakai_manual else alokasi_per_posisi) - modal_aktual
+            if pakai_manual:
+                kembalian_kas = 0  # lot manual: dana terserap = modal_aktual persis, tidak ada "sisa alokasi"
 
             # LL20 dikunci di harga saat ini -- referensi tetap sepanjang posisi dipegang
             df_ll = yf.download(f"{b_ticker.upper()}.JK", period="30d", interval="1d", progress=False) if b_ticker else None
@@ -583,14 +716,15 @@ with tab1:
 
             ll20_display = f"{ll20_terkunci:,.0f}" if ll20_terkunci is not None else "n/a"
 
+            label_lot = f"{lot_kalkulasi} lot (input manual)" if pakai_manual else f"{lot_kalkulasi} lot (saran otomatis)"
+            baris_sisa = "" if pakai_manual else f"Sisa masuk kas: <span style=\"color:var(--up);\">Rp {kembalian_kas:,.0f}</span><br>"
             st.markdown(f"""
             <div class="candidate-row">
-                Volume order: {lot_kalkulasi} lot<br>
+                Volume order: {label_lot}<br>
                 Nilai saham: Rp {nilai_kotor:,.0f}<br>
                 Fee + materai: Rp {(total_fee + biaya_materai_final):,.0f}<br>
                 Total dana terserap: <span style="color:var(--down);">Rp {modal_aktual:,.0f}</span><br>
-                Sisa masuk kas: <span style="color:var(--up);">Rp {kembalian_kas:,.0f}</span><br>
-                Batas CL (LL20 saat ini): <span style="color:var(--down);">{ll20_display}</span>
+                {baris_sisa}Batas CL (LL20 saat ini): <span style="color:var(--down);">{ll20_display}</span>
             </div>
             """.replace(",", "."), unsafe_allow_html=True)
 
@@ -603,6 +737,11 @@ with tab1:
                         "modal_terserap": modal_aktual,
                         "ll20_terkunci": ll20_terkunci,
                         "ob_streak": 0,
+                        "asal": "compounding",
+                    })
+                    port["log_transaksi"].append({
+                        "tanggal": TODAY_STR, "aksi": "BELI", "ticker": b_ticker.upper(),
+                        "lot": lot_kalkulasi, "harga": b_price, "pl_rupiah": None,
                     })
                     port["current_cash"] -= modal_aktual
                     port["history"]["total_bought"] += 1
@@ -619,7 +758,8 @@ with tab2:
     if active_pos_count > 0:
         s_ticker = st.selectbox("Pilih saham", [p["ticker"] for p in port["positions"]])
         pos_data = next(item for item in port["positions"] if item["ticker"] == s_ticker)
-        st.caption(f"Posisi: {pos_data['lots']} lot | Modal terserap: Rp {pos_data['modal_terserap']:,.0f}".replace(",", "."))
+        asal_label = "Warisan (bukan hasil Compounding)" if pos_data.get("asal", "compounding") == "warisan" else "Compounding"
+        st.caption(f"Posisi: {pos_data['lots']} lot | Modal terserap: Rp {pos_data['modal_terserap']:,.0f} | Asal: {asal_label}".replace(",", "."))
 
         s_status = st.radio("Jenis eksekusi", ["Take Profit (TP)", "Cut Loss (CL)"], horizontal=True)
         s_price = st.number_input("Harga match (jual)", min_value=0)
@@ -632,24 +772,33 @@ with tab2:
             pl_rupiah = net_return - pos_data["modal_terserap"]
             pl_persen = (pl_rupiah / pos_data["modal_terserap"]) * 100
             pl_color = "var(--up)" if pl_rupiah >= 0 else "var(--down)"
+            is_warisan = pos_data.get("asal", "compounding") == "warisan"
+            catatan_warisan = "<br><span style=\"color:var(--neutral);\">Posisi warisan -- proceeds ini akan masuk Total Modal Masuk, bukan dihitung P/L trading.</span>" if is_warisan else ""
 
             st.markdown(f"""
             <div class="candidate-row">
                 Nilai jual kotor: Rp {nilai_kotor_jual:,.0f}<br>
                 Fee + materai: Rp {(total_fee_jual + biaya_materai_jual):,.0f}<br>
                 Net cair ke kas: Rp {net_return:,.0f}<br>
-                Net P/L: <span style="color:{pl_color};">Rp {pl_rupiah:,.0f} ({pl_persen:+.2f}%)</span>
+                Net P/L: <span style="color:{pl_color};">Rp {pl_rupiah:,.0f} ({pl_persen:+.2f}%)</span>{catatan_warisan}
             </div>
             """.replace(",", "."), unsafe_allow_html=True)
 
             if st.button("Simpan Eksekusi Jual"):
                 port["positions"] = [p for p in port["positions"] if p["ticker"] != s_ticker]
                 port["current_cash"] += net_return
+                if is_warisan:
+                    port["total_modal_masuk"] = port.get("total_modal_masuk", port["initial_capital"]) + net_return
                 port["history"]["total_sold"] += 1
+                jenis_log = "JUAL_TP" if "TP" in s_status else "JUAL_CL"
                 if "TP" in s_status:
                     port["history"]["hit_tp"] += 1
                 else:
                     port["history"]["hit_sl"] += 1
+                port["log_transaksi"].append({
+                    "tanggal": TODAY_STR, "aksi": jenis_log, "ticker": s_ticker,
+                    "lot": pos_data["lots"], "harga": s_price, "pl_rupiah": round(pl_rupiah),
+                })
                 port["daily_tracker"]["accumulated_value"] += nilai_kotor_jual
                 if biaya_materai_jual > 0:
                     port["daily_tracker"]["materai_paid"] = True
@@ -739,6 +888,70 @@ st.caption(
     "Data historis, bukan sinyal beli/jual. Bukan nasihat keuangan. "
     "Sistem breakout murni -- keranjang retrace dikarantina permanen (winrate 11.8% saat diuji)."
 )
+
+# =====================================================================
+# UI -- REKAP SIKLUS 10 HARI BURSA
+# =====================================================================
+kalender_bursa = get_kalender_bursa()
+log = port.get("log_transaksi", [])
+
+if kalender_bursa and log:
+    hari_sekarang = hari_ke(TODAY_STR, kalender_bursa)
+    siklus_sekarang = (hari_sekarang - 1) // 10 + 1
+    hari_dalam_siklus = (hari_sekarang - 1) % 10 + 1
+
+    rekap = {}
+    for entry in log:
+        hk = hari_ke(entry["tanggal"], kalender_bursa)
+        sk = (hk - 1) // 10 + 1
+        r = rekap.setdefault(sk, {"beli": 0, "jual": 0, "tp": 0, "cl": 0, "realized": 0.0})
+        if entry["aksi"] == "BELI":
+            r["beli"] += 1
+        elif entry["aksi"] == "JUAL_TP":
+            r["jual"] += 1; r["tp"] += 1; r["realized"] += entry.get("pl_rupiah") or 0
+        elif entry["aksi"] == "JUAL_CL":
+            r["jual"] += 1; r["cl"] += 1; r["realized"] += entry.get("pl_rupiah") or 0
+
+    total_realized = sum(r["realized"] for r in rekap.values())
+    total_beli = sum(r["beli"] for r in rekap.values())
+    total_jual = sum(r["jual"] for r in rekap.values())
+    total_tp = sum(r["tp"] for r in rekap.values())
+    total_cl = sum(r["cl"] for r in rekap.values())
+    return_total = ((total_realized + total_unrealized) / total_modal_masuk * 100) if total_modal_masuk > 0 else 0
+
+    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+    st.markdown(f"<div class='panel-title'>Rekap Siklus 10 Hari Bursa -- Sejak {STARTING_DATE}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='regime-sub' style='margin-bottom:8px;'>Hari bursa ke-{hari_sekarang} (siklus {siklus_sekarang}, hari {hari_dalam_siklus}/10)</div>", unsafe_allow_html=True)
+
+    for sk in sorted(rekap.keys()):
+        r = rekap[sk]
+        tanda = " (berjalan)" if sk == siklus_sekarang else ""
+        warna_r = "var(--up)" if r["realized"] >= 0 else "var(--down)"
+        st.markdown(f"""
+        <div class="stat-grid" style="margin-bottom:6px;">
+          <div class="stat-item"><div class="stat-label">Siklus {sk}{tanda}</div><div class="stat-value">Hari {(sk-1)*10+1}-{sk*10}</div></div>
+          <div class="stat-item"><div class="stat-label">Dibeli</div><div class="stat-value">{r['beli']}</div></div>
+          <div class="stat-item"><div class="stat-label">Dijual</div><div class="stat-value">{r['jual']}</div></div>
+          <div class="stat-item"><div class="stat-label">TP</div><div class="stat-value" style="color:var(--up)">{r['tp']}</div></div>
+          <div class="stat-item"><div class="stat-label">CL</div><div class="stat-value" style="color:var(--down)">{r['cl']}</div></div>
+          <div class="stat-item"><div class="stat-label">Realized</div><div class="stat-value" style="color:{warna_r}">Rp {r['realized']:,.0f}</div></div>
+        </div>
+        """.replace(",", "."), unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="stat-grid" style="margin-top:6px; border-top:1px solid var(--line); padding-top:8px;">
+      <div class="stat-item"><div class="stat-label">Total Dibeli</div><div class="stat-value">{total_beli}</div></div>
+      <div class="stat-item"><div class="stat-label">Total Dijual</div><div class="stat-value">{total_jual}</div></div>
+      <div class="stat-item"><div class="stat-label">Total TP</div><div class="stat-value" style="color:var(--up)">{total_tp}</div></div>
+      <div class="stat-item"><div class="stat-label">Total CL</div><div class="stat-value" style="color:var(--down)">{total_cl}</div></div>
+      <div class="stat-item"><div class="stat-label">Realized</div><div class="stat-value" style="color:{'var(--up)' if total_realized>=0 else 'var(--down)'}">Rp {total_realized:,.0f}</div></div>
+      <div class="stat-item"><div class="stat-label">Unrealized</div><div class="stat-value" style="color:{'var(--up)' if total_unrealized>=0 else 'var(--down)'}">Rp {total_unrealized:,.0f}</div></div>
+    </div>
+    <div class="stat-grid" style="margin-top:6px;">
+      <div class="stat-item" style="grid-column: span 2;"><div class="stat-label">Return Total Sejak Hari 1</div><div class="stat-value" style="font-size:16px; color:{'var(--up)' if return_total>=0 else 'var(--down)'}">{return_total:+.2f}%</div></div>
+    </div>
+    """.replace(",", "."), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =====================================================================
 # CHANGELOG
