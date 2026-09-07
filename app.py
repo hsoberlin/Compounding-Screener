@@ -608,6 +608,8 @@ with st.expander("Daftarkan Posisi Warisan"):
                 "ob_streak": 0,
                 "asal": "warisan",
             })
+            total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
+            port["total_equity"] = port["current_cash"] + total_valuasi_saham
             st.session_state["port"] = port
             st.success(f"{w_ticker.upper()} terdaftar sebagai posisi warisan.")
             st.rerun()
@@ -758,6 +760,8 @@ with tab1:
                     port["daily_tracker"]["accumulated_value"] += nilai_kotor
                     if biaya_materai_final > 0:
                         port["daily_tracker"]["materai_paid"] = True
+                    total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
+                    port["total_equity"] = port["current_cash"] + total_valuasi_saham
                     st.session_state["port"] = port
                     st.success(f"Tersimpan: {lot_kalkulasi} lot {b_ticker.upper()}.")
                     st.rerun()
