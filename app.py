@@ -333,19 +333,25 @@ def get_macro_regime():
 
 
 # =====================================================================
-# KALENDER HARI BURSA -- dipakai buat rekap siklus 10 hari, ditarik
-# dari kalender IHSG (^JKSE) sehingga otomatis melewati akhir pekan
-# dan hari libur bursa.
+# KALENDER HARI BURSA -- dihitung langsung dari tanggal (Senin-Jumat),
+# TANPA bergantung ke data live yfinance. Sebelumnya pakai kalender IHSG
+# dari yfinance, tapi itu rawan telat sinkron (baris hari berjalan kadang
+# belum ada sama sekali di data), bikin hitungan siklus salah.
+# LIBUR_NASIONAL berisi tanggal merah hari kerja yang dikecualikan
+# (akhir pekan otomatis kelewat lewat bdate_range, nggak perlu didaftar
+# di sini). Sumber: SKB 3 Menteri Nomor 1497/2/5 Tahun 2025 tentang Hari
+# Libur Nasional & Cuti Bersama 2026 -- cuma yang relevan sejak
+# STARTING_DATE (2026-09-07) ke depan.
 # =====================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
+LIBUR_NASIONAL_2026 = {
+    "2026-12-24",  # Cuti Bersama Natal (Kamis)
+    "2026-12-25",  # Hari Raya Natal (Jumat)
+}
+
+
 def get_kalender_bursa():
-    try:
-        df = yf.download("^JKSE", start=STARTING_DATE, progress=False)
-        if df.empty:
-            return []
-        return [d.strftime("%Y-%m-%d") for d in df.index]
-    except Exception:
-        return []
+    hari_kerja = pd.bdate_range(start=STARTING_DATE, end=TODAY_STR)  # Senin-Jumat saja
+    return [d.strftime("%Y-%m-%d") for d in hari_kerja if d.strftime("%Y-%m-%d") not in LIBUR_NASIONAL_2026]
 
 
 def hari_ke(tanggal_str, kalender):
