@@ -500,6 +500,13 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
         close, high, low = df["Close"], df["High"], df["Low"]
         if isinstance(close, pd.DataFrame):
             close, high, low = close.iloc[:, 0], high.iloc[:, 0], low.iloc[:, 0]
+        # buang baris paling akhir kalau ternyata kosong (yfinance kadang telat
+        # sinkron OHLC hari berjalan meski volume sudah tercatat) -- pakai data
+        # hari terakhir yang BENERAN valid, jangan sampai nampilin nan
+        valid_mask = close.notna()
+        if valid_mask.sum() == 0:
+            return None
+        close, high, low = close[valid_mask], high[valid_mask], low[valid_mask]
         ll10, hh10 = low.rolling(10).min(), high.rolling(10).max()
         stoch_k = (100 * ((close - ll10) / (hh10 - ll10))).rolling(5).mean().iloc[-1]
         harga_now = float(close.iloc[-1])
