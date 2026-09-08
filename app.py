@@ -532,20 +532,47 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
         harga_now = float(close.iloc[-1])
         low_hari_ini = float(low.iloc[-1])
 
+        jam_data_terakhir = f"{close.index[-1].strftime('%d/%m')} (harian)"  # fallback kalau intraday gagal
+
+        # tarik data INTRADAY terpisah buat harga_now yang beneran responsif --
+        # baris harian (interval="1d") kadang kebekukan di angka lama karena
+        # cara yfinance nyimpen baris "hari berjalan". Kalau ada data 15-menitan
+        # buat hari ini, pakai itu buat harga_now & low_hari_ini (lebih akurat),
+        # kalau nggak ada (market tutup/belum ada transaksi), tetap pakai data
+        # harian di atas sebagai fallback -- jangan sampai gagal total. Jam data
+        # terakhir DITAMPILKAN ke user biar staleness keliatan, bukan diam-diam
+        # salah kayak kasus SOCI.
+        try:
+            df_intraday = yf.download(f"{ticker}.JK", period="1d", interval="15m", progress=False)
+            if not df_intraday.empty:
+                close_intra, low_intra = df_intraday["Close"], df_intraday["Low"]
+                if isinstance(close_intra, pd.DataFrame):
+                    close_intra, low_intra = close_intra.iloc[:, 0], low_intra.iloc[:, 0]
+                close_intra, low_intra = close_intra.dropna(), low_intra.dropna()
+                if len(close_intra) > 0:
+                    harga_now = float(close_intra.iloc[-1])
+                    low_hari_ini = float(low_intra.min())
+                    ts = close_intra.index[-1]
+                    if ts.tzinfo is not None:
+                        ts = ts.tz_convert(WIB)
+                    jam_data_terakhir = ts.strftime('%d/%m %H:%M')
+        except Exception:
+            pass  # gagal ambil intraday, tetap pakai harga_now & jam dari data harian
+
         if pd.isna(stoch_k):
             return {"harga_now": harga_now, "stoch_k": None, "ob_streak": ob_streak_tersimpan,
-                    "rekomendasi": "HOLD", "belum_waktunya": False}
+                    "rekomendasi": "HOLD", "belum_waktunya": False, "jam_data": jam_data_terakhir}
 
         # kalau belum jam evaluasi DAN belum pernah dievaluasi hari ini -- tunda,
         # tampilkan data apa adanya tanpa mengubah streak tersimpan
         if sebelum_jam_evaluasi and not sudah_dicek_hari_ini:
             return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_tersimpan,
-                    "rekomendasi": "HOLD", "belum_waktunya": True}
+                    "rekomendasi": "HOLD", "belum_waktunya": True, "jam_data": jam_data_terakhir}
 
         if harga_now < ll20_terkunci:
             ob_streak_final = 0 if not sudah_dicek_hari_ini else ob_streak_tersimpan
             return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_final,
-                    "rekomendasi": "JUAL_CL", "belum_waktunya": False}
+                    "rekomendasi": "JUAL_CL", "belum_waktunya": False, "jam_data": jam_data_terakhir}
 
         if sudah_dicek_hari_ini:
             ob_streak = ob_streak_tersimpan  # sudah dievaluasi hari ini, jangan nambah lagi
@@ -560,7 +587,7 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
             rekom = "JUAL_TP"
 
         return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak,
-                "rekomendasi": rekom, "belum_waktunya": False}
+                "rekomendasi": rekom, "belum_waktunya": False, "jam_data": jam_data_terakhir}
     except Exception:
         return None
 
@@ -738,6 +765,7 @@ if active_pos_count > 0:
           <div class="tick-data">
             {info['harga_now']:,.0f} &nbsp; K=<b>{stoch_txt}</b> &nbsp; ob=<b>{info['ob_streak']}/2</b> &nbsp; CL=<b style="color:var(--down)">{p['ll20_terkunci']:,.0f}</b> &nbsp; gain=<b style="color:{gain_color}">{gain_pct:+.1f}%</b>
           </div>
+          <div class="tick-data" style="color:#555; font-size:8.5px;">data per {info.get('jam_data','?')}</div>
         </div>
         """.replace(",", "."), unsafe_allow_html=True)
     st.session_state["port"] = port
