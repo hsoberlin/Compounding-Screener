@@ -441,14 +441,28 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
         return None  # bukan breakout hari ini
 
     ll10, hh10 = low.rolling(10).min(), high.rolling(10).max()
-    stoch_k = (100 * ((close - ll10) / (hh10 - ll10))).rolling(5).mean().iloc[-1]
-    if pd.isna(stoch_k):
+    stoch_k = (100 * ((close - ll10) / (hh10 - ll10))).rolling(5).mean()
+    stoch_k_now = stoch_k.iloc[-1]
+    if pd.isna(stoch_k_now):
+        return None
+
+    # filter zona lemah: streak K>80 KONTINU (bukan cuma hari ini) 3-4 hari
+    # terbukti dari backtest hasilnya lebih jelek (-0.83%, winrate 42.9%)
+    # dibanding fresh (1-2 hari) atau established (5+ hari) -- coret otomatis,
+    # nggak peduli sebab-musababnya (re-entry bekas TP atau kebetulan aja)
+    streak_kontinu = 0
+    for v in stoch_k.values[::-1]:
+        if pd.notna(v) and v > 80:
+            streak_kontinu += 1
+        else:
+            break
+    if 3 <= streak_kontinu <= 4:
         return None
 
     fase = hitung_fase_wyckoff(low)
 
     # -- Buy Confidence: bobot sesuai backtest (r=0.421) --
-    momentum_score = min(60, stoch_k * 0.6)
+    momentum_score = min(60, stoch_k_now * 0.6)
     fase_score = 30 if fase >= 3 else (20 if fase in (1, 2) else 10)
     vol_score = max(0, (1.0 - vol_ratio)) * 10
     buy_conf = min(99, momentum_score + fase_score + vol_score)
@@ -465,7 +479,7 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
         "ticker": ticker,
         "close": float(close_now),
         "ll20": float(ll20),
-        "stoch_k": float(stoch_k),
+        "stoch_k": float(stoch_k_now),
         "vol_ratio": float(vol_ratio),
         "fase": int(fase),
         "buy_confidence": float(buy_conf),
