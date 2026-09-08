@@ -83,48 +83,58 @@ code, .stMarkdown code, [data-testid="stMetricValue"] {
 }
 
 .app-title {
-  font-family: 'Inter', sans-serif;
-  font-size: 26px;
-  font-weight: 700;
-  background: linear-gradient(90deg, #4A7DFF 0%, #26A65B 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 1px;
+  margin-bottom: 0px;
 }
 .app-subtitle {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 9px;
   color: var(--text-dim);
   letter-spacing: 0.5px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .regime-value {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
 }
 .regime-sub {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 9.5px;
   color: var(--text-dim);
-  margin-top: 3px;
+  margin-top: 2px;
 }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px; }
-.stat-item { background: #0F1114; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
-.stat-label { font-size: 9.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
-.stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; font-weight: 600; margin-top: 1px; }
+/* grid lama (dipakai di panel Ekuitas) -- dipadatkan */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 4px; }
+.stat-item { background: #0F1114; border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; }
+.stat-label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+.stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; margin-top: 0px; }
 
-.candidate-row {
-  background: #0F1114; border: 1px solid var(--line); border-radius: 5px;
-  padding: 10px 12px; margin-bottom: 6px;
+/* baris data padat -- dipakai di kandidat & posisi aktif, ganti gaya kotak */
+.tick-row {
+  background: #0F1114; border: 1px solid var(--line); border-radius: 4px;
+  padding: 5px 8px; margin-bottom: 4px;
 }
-.candidate-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-.candidate-ticker { font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 700; }
-.conf-bar-bg { background: #22252B; border-radius: 3px; height: 4px; overflow: hidden; margin-top: 4px; }
+.tick-head { display: flex; justify-content: space-between; align-items: baseline; }
+.tick-ticker { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; font-weight: 700; }
+.tick-rekom { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; font-weight: 600; }
+.tick-data { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: var(--text-dim); margin-top: 1px; }
+.tick-data b { color: var(--text); font-weight: 600; }
+.conf-bar-bg { background: #22252B; border-radius: 2px; height: 3px; overflow: hidden; margin-top: 3px; }
 .conf-bar-fill { height: 100%; }
+
+/* kotak teks polos -- dipakai di preview form Beli/Jual */
+.candidate-row {
+  background: #0F1114; border: 1px solid var(--line); border-radius: 4px;
+  padding: 6px 9px; margin-bottom: 5px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 1.6;
+}
 
 .rec-hold { color: var(--text-dim); }
 .rec-sell-tp { color: var(--up); font-weight: 600; }
@@ -464,14 +474,25 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     }
 
 
-def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None):
+JAM_EVALUASI_MINIMAL = 15  # evaluasi ob_streak cuma dipercaya kalau dicek jam 15:00 WIB ke atas
+
+
+def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None, entry_price=None):
     """Tarik data terbaru satu saham dan hitung status SOP: HOLD, JUAL(TP),
     atau JUAL(CL). ob_streak_tersimpan dilewatkan dari jurnal biar hitungan
     hari-beruntun-overbought konsisten antar sesi. last_check_date mencegah
     streak nambah berkali-kali kalau app di-render ulang di hari yang sama
     (Streamlit rerun tiap ada interaksi) -- streak cuma boleh berubah
-    SEKALI per hari kalender."""
+    SEKALI per hari kalender, dan cuma kalau dicek jam 15:00 WIB ke atas
+    (sebelum itu data belum representatif, evaluasi ditunda).
+    entry_price dipakai buat pengaman breakeven: kalau posisi udah masuk
+    proses TP (ob_streak>=1) dan harga terendah hari ini sempat menyentuh
+    harga beli, langsung rekomendasi JUAL -- terbukti dari backtest 58%
+    kejadian serupa berlanjut turun, cuma 38% yang balik naik ke closing."""
+    jam_sekarang = datetime.now(WIB).hour
+    sebelum_jam_evaluasi = jam_sekarang < JAM_EVALUASI_MINIMAL
     sudah_dicek_hari_ini = last_check_date == TODAY_STR
+
     try:
         df = yf.download(f"{ticker}.JK", period="30d", interval="1d", progress=False)
         if df.empty:
@@ -482,20 +503,37 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
         ll10, hh10 = low.rolling(10).min(), high.rolling(10).max()
         stoch_k = (100 * ((close - ll10) / (hh10 - ll10))).rolling(5).mean().iloc[-1]
         harga_now = float(close.iloc[-1])
+        low_hari_ini = float(low.iloc[-1])
 
         if pd.isna(stoch_k):
-            return {"harga_now": harga_now, "stoch_k": None, "ob_streak": ob_streak_tersimpan, "rekomendasi": "HOLD"}
+            return {"harga_now": harga_now, "stoch_k": None, "ob_streak": ob_streak_tersimpan,
+                    "rekomendasi": "HOLD", "belum_waktunya": False}
+
+        # kalau belum jam evaluasi DAN belum pernah dievaluasi hari ini -- tunda,
+        # tampilkan data apa adanya tanpa mengubah streak tersimpan
+        if sebelum_jam_evaluasi and not sudah_dicek_hari_ini:
+            return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_tersimpan,
+                    "rekomendasi": "HOLD", "belum_waktunya": True}
 
         if harga_now < ll20_terkunci:
             ob_streak_final = 0 if not sudah_dicek_hari_ini else ob_streak_tersimpan
-            return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_final, "rekomendasi": "JUAL_CL"}
+            return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak_final,
+                    "rekomendasi": "JUAL_CL", "belum_waktunya": False}
 
         if sudah_dicek_hari_ini:
             ob_streak = ob_streak_tersimpan  # sudah dievaluasi hari ini, jangan nambah lagi
         else:
             ob_streak = ob_streak_tersimpan + 1 if stoch_k > 80 else 0
+
         rekom = "JUAL_TP" if ob_streak >= STOCH_OB_STREAK_TP else "HOLD"
-        return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak, "rekomendasi": rekom}
+
+        # pengaman breakeven: sudah dalam proses TP (streak>=1) + low hari ini
+        # sempat menyentuh/di bawah harga beli -> jual sekarang, jangan tunggu closing
+        if rekom == "HOLD" and ob_streak >= 1 and entry_price and low_hari_ini <= entry_price:
+            rekom = "JUAL_TP"
+
+        return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak,
+                "rekomendasi": rekom, "belum_waktunya": False}
     except Exception:
         return None
 
@@ -530,7 +568,7 @@ with st.container():
             st.error("Format JSON tidak valid.")
     st.markdown("</div>", unsafe_allow_html=True)
 
-alokasi_per_posisi = port["initial_capital"] * 0.20
+alokasi_per_posisi = port.get("total_modal_masuk", port["initial_capital"]) * 0.20
 active_pos_count = len(port["positions"])
 total_modal_masuk = port.get("total_modal_masuk", port["initial_capital"])
 return_pct = (port["total_equity"] / total_modal_masuk - 1) * 100 if total_modal_masuk > 0 else 0.0
@@ -642,35 +680,36 @@ if active_pos_count > 0:
     st.markdown("<div class='panel-title'>Status Posisi Aktif</div>", unsafe_allow_html=True)
     total_unrealized = 0.0
     for p in port["positions"]:
-        info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0), p.get("last_ob_check"))
+        info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0),
+                                    p.get("last_ob_check"), p.get("entry_price"))
         if info is None:
             st.write(f"{p['ticker']}: data tidak tersedia saat ini.")
             continue
         p["ob_streak"] = info["ob_streak"]
-        p["last_ob_check"] = TODAY_STR
+        if not info["belum_waktunya"]:
+            p["last_ob_check"] = TODAY_STR  # cuma catat sebagai "sudah dicek hari ini" kalau evaluasinya valid
         nilai_now = info["harga_now"] * p["lots"] * 100
         gain_pct = (nilai_now / p["modal_terserap"] - 1) * 100
         total_unrealized += (nilai_now - p["modal_terserap"])
         gain_color = "var(--up)" if gain_pct >= 0 else "var(--down)"
-        rekom_map = {
-            "HOLD": ("HOLD", "rec-hold"),
-            "JUAL_TP": ("JUAL -- TAKE PROFIT", "rec-sell-tp"),
-            "JUAL_CL": ("JUAL -- CUT LOSS", "rec-sell-cl"),
-        }
-        label_rekom, kelas_rekom = rekom_map[info["rekomendasi"]]
+        if info["belum_waktunya"]:
+            label_rekom, kelas_rekom = (f"TUNGGU >{JAM_EVALUASI_MINIMAL}:00", "rec-hold")
+        else:
+            rekom_map = {
+                "HOLD": ("HOLD", "rec-hold"),
+                "JUAL_TP": ("JUAL (TP)", "rec-sell-tp"),
+                "JUAL_CL": ("JUAL (CL)", "rec-sell-cl"),
+            }
+            label_rekom, kelas_rekom = rekom_map[info["rekomendasi"]]
         stoch_txt = f"{info['stoch_k']:.1f}" if info["stoch_k"] is not None else "n/a"
         st.markdown(f"""
-        <div class="candidate-row">
-          <div class="candidate-head">
-            <span class="candidate-ticker">{p['ticker']}</span>
-            <span class="{kelas_rekom}">{label_rekom}</span>
+        <div class="tick-row">
+          <div class="tick-head">
+            <span class="tick-ticker">{p['ticker']}</span>
+            <span class="tick-rekom {kelas_rekom}">{label_rekom}</span>
           </div>
-          <div class="stat-grid">
-            <div class="stat-item"><div class="stat-label">Harga Now</div><div class="stat-value">{info['harga_now']:,.0f}</div></div>
-            <div class="stat-item"><div class="stat-label">Gain</div><div class="stat-value" style="color:{gain_color}">{gain_pct:+.1f}%</div></div>
-            <div class="stat-item"><div class="stat-label">Stochastic K</div><div class="stat-value">{stoch_txt}</div></div>
-            <div class="stat-item"><div class="stat-label">Overbought Streak</div><div class="stat-value">{info['ob_streak']}/2 hari</div></div>
-            <div class="stat-item"><div class="stat-label">Batas CL (LL20)</div><div class="stat-value" style="color:var(--down)">{p['ll20_terkunci']:,.0f}</div></div>
+          <div class="tick-data">
+            {info['harga_now']:,.0f} &nbsp; K=<b>{stoch_txt}</b> &nbsp; ob=<b>{info['ob_streak']}/2</b> &nbsp; CL=<b style="color:var(--down)">{p['ll20_terkunci']:,.0f}</b> &nbsp; gain=<b style="color:{gain_color}">{gain_pct:+.1f}%</b>
           </div>
         </div>
         """.replace(",", "."), unsafe_allow_html=True)
@@ -876,24 +915,19 @@ if st.button("Pindai Pasar"):
         st.stop()
 
     kandidat.sort(key=lambda x: -x["buy_confidence"])
-    st.subheader(f"Kandidat Breakout -- {len(kandidat)} saham")
+    st.markdown(f"<div style='font-family:IBM Plex Mono,monospace; font-size:12px; font-weight:600; color:var(--text); margin:6px 0;'>KANDIDAT BREAKOUT ({len(kandidat)})</div>", unsafe_allow_html=True)
 
     for c in kandidat:
         conf_color = "var(--up)" if c["buy_confidence"] >= 75 else ("var(--neutral)" if c["buy_confidence"] >= 50 else "var(--down)")
         st.markdown(f"""
-        <div class="candidate-row">
-            <div class="candidate-head">
-                <span class="candidate-ticker">{c['ticker']}</span>
-                <span style="color:{conf_color}; font-weight:700; font-family:'IBM Plex Mono',monospace;">{c['buy_confidence']:.0f}%</span>
+        <div class="tick-row">
+            <div class="tick-head">
+                <span class="tick-ticker">{c['ticker']}</span>
+                <span style="color:{conf_color}; font-weight:700; font-family:'IBM Plex Mono',monospace; font-size:11px;">{c['buy_confidence']:.0f}%</span>
             </div>
             <div class="conf-bar-bg"><div class="conf-bar-fill" style="width:{c['buy_confidence']}%; background:{conf_color};"></div></div>
-            <div class="stat-grid" style="margin-top:10px;">
-                <div class="stat-item"><div class="stat-label">Harga</div><div class="stat-value">{c['close']:,.0f}</div></div>
-                <div class="stat-item"><div class="stat-label">Stochastic K</div><div class="stat-value">{c['stoch_k']:.1f}</div></div>
-                <div class="stat-item"><div class="stat-label">Fase Wyckoff</div><div class="stat-value">{c['fase']}</div></div>
-                <div class="stat-item"><div class="stat-label">Sizing</div><div class="stat-value" style="color:var(--accent)">{c['lot_size']} lot</div></div>
-                <div class="stat-item"><div class="stat-label">Modal</div><div class="stat-value" style="color:var(--up)">Rp {c['modal_terserap']:,.0f}</div></div>
-                <div class="stat-item"><div class="stat-label">Batas CL</div><div class="stat-value" style="color:var(--down)">{c['ll20']:,.0f}</div></div>
+            <div class="tick-data">
+                {c['close']:,.0f} &nbsp; K=<b>{c['stoch_k']:.1f}</b> &nbsp; fase=<b>{c['fase']}</b> &nbsp; lot=<b style="color:var(--accent)">{c['lot_size']}</b> &nbsp; modal=<b style="color:var(--up)">{c['modal_terserap']:,.0f}</b> &nbsp; CL=<b style="color:var(--down)">{c['ll20']:,.0f}</b>
             </div>
         </div>
         """.replace(",", "."), unsafe_allow_html=True)
