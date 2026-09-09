@@ -590,12 +590,17 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
         else:
             ob_streak = ob_streak_tersimpan + 1 if stoch_k > 80 else 0
 
-        rekom = "JUAL_TP" if ob_streak >= STOCH_OB_STREAK_TP else "HOLD"
-
-        # pengaman breakeven: sudah dalam proses TP (streak>=1) + low hari ini
-        # sempat menyentuh/di bawah harga beli -> jual sekarang, jangan tunggu closing
-        if rekom == "HOLD" and ob_streak >= 1 and entry_price and low_hari_ini <= entry_price:
-            rekom = "JUAL_TP"
+        # rekomendasi JUAL dari K-streak (STOCH_OB_STREAK_TP hari beruntun >80)
+        # ATAU dari pengaman breakeven (low hari ini sempat sentuh harga beli)
+        sinyal_jual = (ob_streak >= STOCH_OB_STREAK_TP) or (ob_streak >= 1 and entry_price and low_hari_ini <= entry_price)
+        if sinyal_jual:
+            # label TP/CL dari UNTUNG/RUGI RIIL (harga_now vs harga beli),
+            # BUKAN dari mekanisme pemicu -- K-streak bisa aja confirmed
+            # tapi harganya udah turun di bawah harga beli (kayak ARNA/MGRO/
+            # RSCH 8 Sept kemarin, TP confirmed tapi hasil akhirnya rugi).
+            rekom = "JUAL_TP" if (entry_price and harga_now > entry_price) else "JUAL_CL"
+        else:
+            rekom = "HOLD"
 
         return {"harga_now": harga_now, "stoch_k": float(stoch_k), "ob_streak": ob_streak,
                 "rekomendasi": rekom, "belum_waktunya": False, "jam_data": jam_data_terakhir}
