@@ -465,6 +465,37 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     if 3 <= streak_kontinu <= 4:
         return None
 
+    # filter gap harian ekstrem: kalau lompatan harga hari ini vs closing
+    # kemarin >10%, itu tanda "ledakan sekali gerak" (kayak MSJA +14.5%
+    # sehari) -- rawan profit-taking mendadak abis euforia awal. Terbukti
+    # dari backtest: gabung sama filter episode di bawah, rata-rata naik
+    # dari +0.39% jadi +1.83% (n=520 -> n=218).
+    if len(close) >= 2:
+        harga_kemarin = close.iloc[-2]
+        if pd.notna(harga_kemarin) and harga_kemarin > 0:
+            gap_pct = close_now / harga_kemarin - 1
+            if gap_pct > 0.10:
+                return None
+
+    # filter saham "choppy" -- berapa kali K nembus 80 dalam 45 hari
+    # terakhir (episode terpisah, beda dari streak_kontinu di atas yang
+    # cuma ngecek yang SEKARANG). Saham yang bolak-balik overbought
+    # berkali-kali (kayak MGRO/HOMI, K naik-turun-naik lagi) itu lebih
+    # lemah daripada breakout bersih sekali jalan. Maks 1 episode dalam
+    # 45 hari terakhir (termasuk yang sekarang).
+    hist_k_45 = stoch_k.iloc[-45:] if len(stoch_k) >= 45 else stoch_k
+    episode_ob = 0
+    pernah_di_atas = False
+    for v in hist_k_45.values:
+        if pd.notna(v) and v > 80:
+            if not pernah_di_atas:
+                episode_ob += 1
+                pernah_di_atas = True
+        else:
+            pernah_di_atas = False
+    if episode_ob > 1:
+        return None
+
     fase = hitung_fase_wyckoff(low)
 
     # -- Buy Confidence: bobot sesuai backtest (r=0.421) --
