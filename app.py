@@ -465,36 +465,16 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     if 3 <= streak_kontinu <= 4:
         return None
 
-    # filter gap harian ekstrem: kalau lompatan harga hari ini vs closing
-    # kemarin >10%, itu tanda "ledakan sekali gerak" (kayak MSJA +14.5%
-    # sehari) -- rawan profit-taking mendadak abis euforia awal. Terbukti
-    # dari backtest: gabung sama filter episode di bawah, rata-rata naik
-    # dari +0.39% jadi +1.83% (n=520 -> n=218).
-    if len(close) >= 2:
-        harga_kemarin = close.iloc[-2]
-        if pd.notna(harga_kemarin) and harga_kemarin > 0:
-            gap_pct = close_now / harga_kemarin - 1
-            if gap_pct > 0.10:
-                return None
-
-    # filter saham "choppy" -- berapa kali K nembus 80 dalam 45 hari
-    # terakhir (episode terpisah, beda dari streak_kontinu di atas yang
-    # cuma ngecek yang SEKARANG). Saham yang bolak-balik overbought
-    # berkali-kali (kayak MGRO/HOMI, K naik-turun-naik lagi) itu lebih
-    # lemah daripada breakout bersih sekali jalan. Maks 1 episode dalam
-    # 45 hari terakhir (termasuk yang sekarang).
-    hist_k_45 = stoch_k.iloc[-45:] if len(stoch_k) >= 45 else stoch_k
-    episode_ob = 0
-    pernah_di_atas = False
-    for v in hist_k_45.values:
-        if pd.notna(v) and v > 80:
-            if not pernah_di_atas:
-                episode_ob += 1
-                pernah_di_atas = True
-        else:
-            pernah_di_atas = False
-    if episode_ob > 1:
-        return None
+    # CATATAN: filter "gap harian ekstrem" dan "episode overbought berulang"
+    # sempat ditambahkan (9 Sept malam) tapi DIBUANG lagi setelah diuji
+    # simulasi portofolio PENUH (bukan cuma per-sinyal) -- meski per-sinyal
+    # kelihatan bagus, gabungannya bikin sistem nyaris nggak bisa transaksi
+    # (88% hari kosong kandidat, return anjlok dari +6.24% jadi +0.14%,
+    # bahkan sampai -1.19% saat dilonggarin ke maks 2 episode). Pelajaran:
+    # filter yang bagus SENDIRIAN belum tentu bagus digabung ke filter lain
+    # -- selalu uji simulasi portofolio penuh, bukan cuma per-sinyal, sebelum
+    # deploy. streak_kontinu di atas TETAP dipakai -- itu terbukti dua kali
+    # (per-sinyal +1.83%, DAN portofolio penuh +6.24% -> +7.74%).
 
     fase = hitung_fase_wyckoff(low)
 
@@ -900,7 +880,6 @@ with tab2:
         asal_label = "Warisan (bukan hasil Compounding)" if pos_data.get("asal", "compounding") == "warisan" else "Compounding"
         st.caption(f"Posisi: {pos_data['lots']} lot | Modal terserap: Rp {pos_data['modal_terserap']:,.0f} | Asal: {asal_label}".replace(",", "."))
 
-        s_status = st.radio("Jenis eksekusi", ["Take Profit (TP)", "Cut Loss (CL)"], horizontal=True)
         s_price = st.number_input("Harga match (jual)", min_value=0)
 
         if s_price > 0:
@@ -911,6 +890,11 @@ with tab2:
             pl_rupiah = net_return - pos_data["modal_terserap"]
             pl_persen = (pl_rupiah / pos_data["modal_terserap"]) * 100
             pl_color = "var(--up)" if pl_rupiah >= 0 else "var(--down)"
+            # TP/CL ditentukan dari HASIL UNTUNG/RUGI RIIL, bukan dari mekanisme
+            # pemicu (K-streak vs LL20) -- posisi bisa keluar lewat jalur "TP"
+            # (K>80 dua hari) tapi tetap RUGI, itu harus tercatat CL, bukan TP.
+            jenis_log = "JUAL_TP" if pl_rupiah > 0 else "JUAL_CL"
+            label_hasil = "UNTUNG (TP)" if pl_rupiah > 0 else "RUGI (CL)"
             is_warisan = pos_data.get("asal", "compounding") == "warisan"
             catatan_warisan = "<br><span style=\"color:var(--neutral);\">Posisi warisan -- proceeds ini akan masuk Total Modal Masuk, bukan dihitung P/L trading.</span>" if is_warisan else ""
 
@@ -919,7 +903,7 @@ with tab2:
                 Nilai jual kotor: Rp {nilai_kotor_jual:,.0f}<br>
                 Fee + materai: Rp {(total_fee_jual + biaya_materai_jual):,.0f}<br>
                 Net cair ke kas: Rp {net_return:,.0f}<br>
-                Net P/L: <span style="color:{pl_color};">Rp {pl_rupiah:,.0f} ({pl_persen:+.2f}%)</span>{catatan_warisan}
+                Net P/L: <span style="color:{pl_color};">Rp {pl_rupiah:,.0f} ({pl_persen:+.2f}%) -- {label_hasil}</span>{catatan_warisan}
             </div>
             """.replace(",", "."), unsafe_allow_html=True)
 
@@ -929,8 +913,7 @@ with tab2:
                 if is_warisan:
                     port["total_modal_masuk"] = port.get("total_modal_masuk", port["initial_capital"]) + net_return
                 port["history"]["total_sold"] += 1
-                jenis_log = "JUAL_TP" if "TP" in s_status else "JUAL_CL"
-                if "TP" in s_status:
+                if pl_rupiah > 0:
                     port["history"]["hit_tp"] += 1
                 else:
                     port["history"]["hit_sl"] += 1
