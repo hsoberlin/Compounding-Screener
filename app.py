@@ -251,12 +251,14 @@ def init_portfolio(capital):
     return {
         "last_updated": TODAY_STR,
         "initial_capital": capital,
-        "total_modal_masuk": capital,   # kumulatif: modal awal + semua suntikan berikutnya
+        "total_modal_masuk": capital,   # kumulatif: modal awal + semua suntikan berikutnya (warisan)
         "current_cash": capital,
         "total_equity": capital,
         "positions": [],
         "history": {"total_bought": 0, "total_sold": 0, "hit_tp": 0, "hit_sl": 0},
         "log_transaksi": [],            # riwayat bertanggal, dipakai buat rekap siklus 10 hari
+        "modal_compounding_total": 0,   # kumulatif modal yang PERNAH dipakai buat beli compounding (bukan warisan)
+        "realized_pl_compounding": 0,   # kumulatif P/L RIIL dari jual compounding (bukan warisan)
         "daily_tracker": {"date": TODAY_STR, "accumulated_value": 0, "materai_paid": False},
     }
 
@@ -641,7 +643,18 @@ with st.container():
 alokasi_per_posisi = port.get("total_modal_masuk", port["initial_capital"]) * 0.20
 active_pos_count = len(port["positions"])
 total_modal_masuk = port.get("total_modal_masuk", port["initial_capital"])
-return_pct = (port["total_equity"] / total_modal_masuk - 1) * 100 if total_modal_masuk > 0 else 0.0
+realized_pl_compounding = port.get("realized_pl_compounding", 0)
+# Modal yang Dimainkan = kas aktif + nilai (at-cost) posisi compounding yang
+# masih terbuka SEKARANG -- ini pendekatan ke Time-Weighted Return (standar
+# pelaporan trader profesional), yang wajib dipakai begitu ada suntikan modal
+# di tengah jalan (proceeds warisan yang dipakai ulang buat beli compounding),
+# supaya suntikan itu TIDAK ikut kehitung sebagai "untung". Dihitung ulang tiap
+# render, bukan angka statis, karena berubah tiap ada transaksi compounding.
+# Terbukti paling dekat ke metodologi sheet KINERJA PER SISTEM (+2.54% vs
+# +2.31%), jauh lebih akurat daripada baseline modal tetap (+4.48%, ternyata
+# ke-inflate karena nggak ngitung proceeds warisan yang dipakai ulang).
+modal_dimainkan = port["current_cash"] + sum(p["modal_terserap"] for p in port["positions"] if p.get("asal", "compounding") == "compounding")
+return_pct = (realized_pl_compounding / modal_dimainkan * 100) if modal_dimainkan > 0 else 0.0
 
 st.markdown("<div class='panel'>", unsafe_allow_html=True)
 st.markdown("<div class='panel-title'>Ekuitas & Posisi</div>", unsafe_allow_html=True)
@@ -649,8 +662,8 @@ st.markdown(f"""
 <div class="stat-grid">
   <div class="stat-item"><div class="stat-label">Total Ekuitas</div><div class="stat-value">Rp {port['total_equity']:,.0f}</div></div>
   <div class="stat-item"><div class="stat-label">Kas Aktif</div><div class="stat-value" style="color:var(--accent)">Rp {port['current_cash']:,.0f}</div></div>
-  <div class="stat-item"><div class="stat-label">Total Modal Masuk</div><div class="stat-value">Rp {total_modal_masuk:,.0f}</div></div>
-  <div class="stat-item"><div class="stat-label">Return</div><div class="stat-value" style="color:{'var(--up)' if return_pct>=0 else 'var(--down)'}">{return_pct:+.2f}%</div></div>
+  <div class="stat-item"><div class="stat-label">Modal Dimainkan</div><div class="stat-value">Rp {modal_dimainkan:,.0f}</div></div>
+  <div class="stat-item"><div class="stat-label">Return Compounding (Realized)</div><div class="stat-value" style="color:{'var(--up)' if return_pct>=0 else 'var(--down)'}">{return_pct:+.2f}%</div></div>
 </div>
 """.replace(",", "."), unsafe_allow_html=True)
 
@@ -686,6 +699,7 @@ with st.expander("Tambah Modal"):
         if tambah_nominal > 0:
             port["current_cash"] += tambah_nominal
             port["total_modal_masuk"] = port.get("total_modal_masuk", port["initial_capital"]) + tambah_nominal
+            port["modal_compounding_total"] = port.get("modal_compounding_total", 0) + tambah_nominal
             total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
             port["total_equity"] = port["current_cash"] + total_valuasi_saham
             st.session_state["port"] = port
@@ -917,6 +931,8 @@ with tab2:
                 port["current_cash"] += net_return
                 if is_warisan:
                     port["total_modal_masuk"] = port.get("total_modal_masuk", port["initial_capital"]) + net_return
+                else:
+                    port["realized_pl_compounding"] = port.get("realized_pl_compounding", 0) + pl_rupiah
                 port["history"]["total_sold"] += 1
                 if pl_rupiah > 0:
                     port["history"]["hit_tp"] += 1
