@@ -173,7 +173,6 @@ TARIF_MATERAI = 10_000
 BATAS_MATERAI = 10_000_000
 
 STOCH_OB_STREAK_TP = 2              # hari beruntun K>80 untuk sinyal jual TP
-SUSPEND_CHECK_DAYS = 5               # kalau volume NOL total N hari terakhir -> dianggap suspend, dicoret
 
 IDX_TICKERS_ALL = """AADI, AALI, ABDA, ABMM, ACES, ACRO, ACST, ADCP, ADES, ADHI, ADMF, ADMG,
 ADMR, ADRO, AGAR, AGII, AGRO, AGRS, AHAP, AISA, AKKU, AKPI, AKRA, AKSI,
@@ -424,15 +423,6 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     if len(close) < 130:
         return None
 
-    # -- Gerbang deteksi SUSPEND: kalau volume NOL total N hari terakhir,
-    # harga biasanya ikut beku (PACK & TRUK kejadian nyata Sept 2026 --
-    # keduanya lolos semua filter breakout lain karena "vol_ratio" dan
-    # "K stochastic" tetap keitung valid meski harga statis, padahal
-    # nggak ada transaksi sama sekali). Ini dicoret duluan, sebelum
-    # gerbang lain, biar nggak keitung di kandidat sama sekali.
-    if volume.tail(SUSPEND_CHECK_DAYS).sum() == 0:
-        return None
-
     val_ma20 = (close * volume).rolling(20).mean().iloc[-1]
     hh20 = high.shift(1).rolling(LL_PERIOD).max().iloc[-1]
     ll20 = low.shift(1).rolling(LL_PERIOD).min().iloc[-1]
@@ -520,7 +510,7 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
 JAM_EVALUASI_MINIMAL = 15  # evaluasi ob_streak cuma dipercaya kalau dicek jam 15:00 WIB ke atas
 
 
-def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None, entry_price=None, tanggal_beli=None):
+def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None, entry_price=None):
     """Tarik data terbaru satu saham dan hitung status SOP: HOLD, JUAL(TP),
     atau JUAL(CL). ob_streak_tersimpan dilewatkan dari jurnal biar hitungan
     hari-beruntun-overbought konsisten antar sesi. last_check_date mencegah
@@ -531,15 +521,7 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
     entry_price dipakai buat pengaman breakeven: kalau posisi udah masuk
     proses TP (ob_streak>=1) dan harga terendah hari ini sempat menyentuh
     harga beli, langsung rekomendasi JUAL -- terbukti dari backtest 58%
-    kejadian serupa berlanjut turun, cuma 38% yang balik naik ke closing.
-    tanggal_beli dipakai buat FIX bug: kalau posisi baru dibeli PERSIS di
-    hari evaluasi ini (tanggal_beli == TODAY_STR), pengaman breakeven
-    DISKIP untuk hari itu saja -- soalnya low harian bisa saja terjadi
-    SEBELUM order beli match (mis. harga dip duluan pagi/siang, baru
-    match sore di harga lebih tinggi), jadi "low hari ini sentuh harga
-    beli" bukan sinyal breakout gagal yang valid buat posisi yang belum
-    genap sehari dipegang. CL (closing < LL20 terkunci) tetap berlaku
-    normal, cuma breakeven-safety-nya yang ditunda mulai besok."""
+    kejadian serupa berlanjut turun, cuma 38% yang balik naik ke closing."""
     jam_sekarang = datetime.now(WIB).hour
     sebelum_jam_evaluasi = jam_sekarang < JAM_EVALUASI_MINIMAL
     sudah_dicek_hari_ini = last_check_date == TODAY_STR
@@ -612,11 +594,7 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
 
         # rekomendasi JUAL dari K-streak (STOCH_OB_STREAK_TP hari beruntun >80)
         # ATAU dari pengaman breakeven (low hari ini sempat sentuh harga beli)
-        # -- KECUALI kalau posisi ini baru dibeli PERSIS hari ini, breakeven-
-        # safety diskip (lihat penjelasan di docstring fungsi ini)
-        beli_hari_ini = tanggal_beli == TODAY_STR
-        breakeven_aktif = (not beli_hari_ini) and ob_streak >= 1 and entry_price and low_hari_ini <= entry_price
-        sinyal_jual = (ob_streak >= STOCH_OB_STREAK_TP) or breakeven_aktif
+        sinyal_jual = (ob_streak >= STOCH_OB_STREAK_TP) or (ob_streak >= 1 and entry_price and low_hari_ini <= entry_price)
         if sinyal_jual:
             # label TP/CL dari UNTUNG/RUGI RIIL (harga_now vs harga beli),
             # BUKAN dari mekanisme pemicu -- K-streak bisa aja confirmed
@@ -655,7 +633,6 @@ with st.container():
                 p.setdefault("ob_streak", 0)
                 p.setdefault("asal", "compounding")
                 p.setdefault("last_ob_check", None)
-                p.setdefault("tanggal_beli", None)  # jurnal lama: None = evaluasi breakeven normal
             st.session_state["port"] = data_baru
             st.success("Jurnal termuat.")
             st.rerun()
@@ -752,7 +729,6 @@ with st.expander("Daftarkan Posisi Warisan"):
                 "ll20_terkunci": float(w_ll20) if w_ll20 > 0 else 0,
                 "ob_streak": 0,
                 "asal": "warisan",
-                "tanggal_beli": None,
             })
             total_valuasi_saham = sum(p["modal_terserap"] for p in port["positions"])
             port["total_equity"] = port["current_cash"] + total_valuasi_saham
@@ -789,7 +765,7 @@ if active_pos_count > 0:
     total_unrealized = 0.0
     for p in port["positions"]:
         info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0),
-                                    p.get("last_ob_check"), p.get("entry_price"), p.get("tanggal_beli"))
+                                    p.get("last_ob_check"), p.get("entry_price"))
         if info is None:
             st.write(f"{p['ticker']}: data tidak tersedia saat ini.")
             continue
@@ -898,7 +874,6 @@ with tab1:
                         "ll20_terkunci": ll20_terkunci,
                         "ob_streak": 0,
                         "asal": "compounding",
-                        "tanggal_beli": TODAY_STR,
                     })
                     port["log_transaksi"].append({
                         "tanggal": TODAY_STR, "aksi": "BELI", "ticker": b_ticker.upper(),
@@ -1011,41 +986,39 @@ if st.button("Pindai Pasar"):
         df_market = fetch_market_data(TICKERS)
     if df_market is None:
         st.error("Gagal menarik data pasar.")
-        st.stop()
+    else:
+        kandidat = []
+        for t in TICKERS:
+            df_stock = None
+            if isinstance(df_market.columns, pd.MultiIndex):
+                if f"{t}.JK" in df_market.columns.get_level_values(0):
+                    df_stock = df_market[f"{t}.JK"]
+            else:
+                df_stock = df_market
+            m = analyze_stock(df_stock, t, regime, alokasi_per_posisi)
+            if m:
+                kandidat.append(m)
 
-    kandidat = []
-    for t in TICKERS:
-        df_stock = None
-        if isinstance(df_market.columns, pd.MultiIndex):
-            if f"{t}.JK" in df_market.columns.get_level_values(0):
-                df_stock = df_market[f"{t}.JK"]
+        if not kandidat:
+            st.warning("Tidak ada kandidat breakout valid hari ini.")
         else:
-            df_stock = df_market
-        m = analyze_stock(df_stock, t, regime, alokasi_per_posisi)
-        if m:
-            kandidat.append(m)
+            kandidat.sort(key=lambda x: -x["buy_confidence"])
+            st.markdown(f"<div style='font-family:IBM Plex Mono,monospace; font-size:12px; font-weight:600; color:var(--text); margin:6px 0;'>KANDIDAT BREAKOUT ({len(kandidat)})</div>", unsafe_allow_html=True)
 
-    if not kandidat:
-        st.warning("Tidak ada kandidat breakout valid hari ini.")
-        st.stop()
-
-    kandidat.sort(key=lambda x: -x["buy_confidence"])
-    st.markdown(f"<div style='font-family:IBM Plex Mono,monospace; font-size:12px; font-weight:600; color:var(--text); margin:6px 0;'>KANDIDAT BREAKOUT ({len(kandidat)})</div>", unsafe_allow_html=True)
-
-    for c in kandidat:
-        conf_color = "var(--up)" if c["buy_confidence"] >= 75 else ("var(--neutral)" if c["buy_confidence"] >= 50 else "var(--down)")
-        st.markdown(f"""
-        <div class="tick-row">
-            <div class="tick-head">
-                <span class="tick-ticker">{c['ticker']}</span>
-                <span style="color:{conf_color}; font-weight:700; font-family:'IBM Plex Mono',monospace; font-size:11px;">{c['buy_confidence']:.0f}%</span>
-            </div>
-            <div class="conf-bar-bg"><div class="conf-bar-fill" style="width:{c['buy_confidence']}%; background:{conf_color};"></div></div>
-            <div class="tick-data">
-                {c['close']:,.0f} &nbsp; K=<b>{c['stoch_k']:.1f}</b> &nbsp; fase=<b>{c['fase']}</b> &nbsp; lot=<b style="color:var(--accent)">{c['lot_size']}</b> &nbsp; modal=<b style="color:var(--up)">{c['modal_terserap']:,.0f}</b> &nbsp; CL=<b style="color:var(--down)">{c['ll20']:,.0f}</b>
-            </div>
-        </div>
-        """.replace(",", "."), unsafe_allow_html=True)
+            for c in kandidat:
+                conf_color = "var(--up)" if c["buy_confidence"] >= 75 else ("var(--neutral)" if c["buy_confidence"] >= 50 else "var(--down)")
+                st.markdown(f"""
+                <div class="tick-row">
+                    <div class="tick-head">
+                        <span class="tick-ticker">{c['ticker']}</span>
+                        <span style="color:{conf_color}; font-weight:700; font-family:'IBM Plex Mono',monospace; font-size:11px;">{c['buy_confidence']:.0f}%</span>
+                    </div>
+                    <div class="conf-bar-bg"><div class="conf-bar-fill" style="width:{c['buy_confidence']}%; background:{conf_color};"></div></div>
+                    <div class="tick-data">
+                        {c['close']:,.0f} &nbsp; K=<b>{c['stoch_k']:.1f}</b> &nbsp; fase=<b>{c['fase']}</b> &nbsp; lot=<b style="color:var(--accent)">{c['lot_size']}</b> &nbsp; modal=<b style="color:var(--up)">{c['modal_terserap']:,.0f}</b> &nbsp; CL=<b style="color:var(--down)">{c['ll20']:,.0f}</b>
+                    </div>
+                </div>
+                """.replace(",", "."), unsafe_allow_html=True)
 
 st.caption(
     "Data historis, bukan sinyal beli/jual. Bukan nasihat keuangan. "
