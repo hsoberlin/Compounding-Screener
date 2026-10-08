@@ -422,6 +422,10 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
     close, high, low, volume = close[idx], high[idx], low[idx], volume[idx]
     if len(close) < 130:
         return None
+    # FIX 1 -- saham suspend (volume 5 hari terakhir nol semua) dicoret
+    # sebelum masuk kandidat. Kasus nyata: PACK, TRUK.
+    if volume.tail(5).sum() == 0:
+        return None
 
     val_ma20 = (close * volume).rolling(20).mean().iloc[-1]
     hh20 = high.shift(1).rolling(LL_PERIOD).max().iloc[-1]
@@ -510,7 +514,7 @@ def analyze_stock(df_stock, ticker, regime, alokasi_max):
 JAM_EVALUASI_MINIMAL = 15  # evaluasi ob_streak cuma dipercaya kalau dicek jam 15:00 WIB ke atas
 
 
-def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None, entry_price=None):
+def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check_date=None, entry_price=None, tanggal_beli=None):
     """Tarik data terbaru satu saham dan hitung status SOP: HOLD, JUAL(TP),
     atau JUAL(CL). ob_streak_tersimpan dilewatkan dari jurnal biar hitungan
     hari-beruntun-overbought konsisten antar sesi. last_check_date mencegah
@@ -521,7 +525,12 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
     entry_price dipakai buat pengaman breakeven: kalau posisi udah masuk
     proses TP (ob_streak>=1) dan harga terendah hari ini sempat menyentuh
     harga beli, langsung rekomendasi JUAL -- terbukti dari backtest 58%
-    kejadian serupa berlanjut turun, cuma 38% yang balik naik ke closing."""
+    kejadian serupa berlanjut turun, cuma 38% yang balik naik ke closing.
+    FIX 2: pengaman breakeven TIDAK aktif di hari beli. tanggal_beli
+    dibandingkan ke tanggal CANDLE TERAKHIR (bukan tanggal kalender), jadi
+    posisi yang dibeli Jumat lalu dicek Sabtu tetap dianggap 'hari beli'.
+    Pengaman baru aktif kalau candle terakhir sudah LEWAT tanggal_beli.
+    Posisi tanpa tanggal_beli (warisan/lama) memakai perilaku lama."""
     jam_sekarang = datetime.now(WIB).hour
     sebelum_jam_evaluasi = jam_sekarang < JAM_EVALUASI_MINIMAL
     sudah_dicek_hari_ini = last_check_date == TODAY_STR
@@ -544,6 +553,17 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
         stoch_k = (100 * ((close - ll10) / (hh10 - ll10))).rolling(5).mean().iloc[-1]
         harga_now = float(close.iloc[-1])
         low_hari_ini = float(low.iloc[-1])
+
+        # FIX 2 -- apakah candle terakhir masih hari beli?
+        pengaman_breakeven_aktif = True
+        if tanggal_beli:
+            try:
+                tgl_beli = pd.Timestamp(tanggal_beli).date()
+                tgl_candle_terakhir = pd.Timestamp(close.index[-1]).date()
+                if tgl_candle_terakhir <= tgl_beli:
+                    pengaman_breakeven_aktif = False
+            except Exception:
+                pengaman_breakeven_aktif = True
 
         jam_data_terakhir = f"{close.index[-1].strftime('%d/%m')} (harian)"  # fallback kalau intraday gagal
 
@@ -594,7 +614,7 @@ def status_posisi_aktif(ticker, ll20_terkunci, ob_streak_tersimpan=0, last_check
 
         # rekomendasi JUAL dari K-streak (STOCH_OB_STREAK_TP hari beruntun >80)
         # ATAU dari pengaman breakeven (low hari ini sempat sentuh harga beli)
-        sinyal_jual = (ob_streak >= STOCH_OB_STREAK_TP) or (ob_streak >= 1 and entry_price and low_hari_ini <= entry_price)
+        sinyal_jual = (ob_streak >= STOCH_OB_STREAK_TP) or (pengaman_breakeven_aktif and ob_streak >= 1 and entry_price and low_hari_ini <= entry_price)
         if sinyal_jual:
             # label TP/CL dari UNTUNG/RUGI RIIL (harga_now vs harga beli),
             # BUKAN dari mekanisme pemicu -- K-streak bisa aja confirmed
@@ -765,7 +785,8 @@ if active_pos_count > 0:
     total_unrealized = 0.0
     for p in port["positions"]:
         info = status_posisi_aktif(p["ticker"], p["ll20_terkunci"], p.get("ob_streak", 0),
-                                    p.get("last_ob_check"), p.get("entry_price"))
+                                    p.get("last_ob_check"), p.get("entry_price"),
+                                    p.get("tanggal_beli"))
         if info is None:
             st.write(f"{p['ticker']}: data tidak tersedia saat ini.")
             continue
@@ -874,6 +895,7 @@ with tab1:
                         "ll20_terkunci": ll20_terkunci,
                         "ob_streak": 0,
                         "asal": "compounding",
+                        "tanggal_beli": TODAY_STR,
                     })
                     port["log_transaksi"].append({
                         "tanggal": TODAY_STR, "aksi": "BELI", "ticker": b_ticker.upper(),
@@ -988,6 +1010,8 @@ if st.button("Pindai Pasar"):
         st.error("Gagal menarik data pasar.")
     else:
         kandidat = []
+        sudah_dipegang = {p["ticker"].upper() for p in port["positions"]}
+        kandidat_dipegang = []
         for t in TICKERS:
             df_stock = None
             if isinstance(df_market.columns, pd.MultiIndex):
@@ -997,7 +1021,14 @@ if st.button("Pindai Pasar"):
                 df_stock = df_market
             m = analyze_stock(df_stock, t, regime, alokasi_per_posisi)
             if m:
-                kandidat.append(m)
+                # item 4 -- saham yang sudah dipegang tidak ditampilkan lagi
+                # sebagai kandidat beli (biar tidak kebeli dobel)
+                if t.upper() in sudah_dipegang:
+                    kandidat_dipegang.append(t.upper())
+                else:
+                    kandidat.append(m)
+        if kandidat_dipegang:
+            st.caption("Lolos breakout tapi sudah dipegang, tidak ditampilkan: " + ", ".join(kandidat_dipegang))
 
         if not kandidat:
             st.warning("Tidak ada kandidat breakout valid hari ini.")
